@@ -1,236 +1,127 @@
 import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 import streamlit as st
-import pandas as pd
-import PyPDF2
-from typing import List, Dict, Any
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, pipeline
-from sentence_transformers import SentenceTransformer
+import time
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-import torch
-import time 
-from DocumentProcessor import DocumentProcessor
-from RAGBot import RAGBot
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score
+# from DocumentProcessor import DocumentProcessor
+# from rag_bot import RAGBot
 
-# Page configuration
-st.set_page_config(
-    page_title="RAG Bot - Document Q&A",
-    page_icon="🤖",
-    layout="wide"
-)
+# ------------------- Page Config -------------------
+st.set_page_config(page_title="RAG Bot - Document Q&A", page_icon="🤖", layout="wide")
+
+# ------------------- Sidebar Navigation -------------------
 page = st.sidebar.selectbox("Navigate", ["📁 Q&A Interface", "📊 Evaluation Stats"])
 
-# Initialize session state
-if 'documents' not in st.session_state:
-    st.session_state.documents = []
-if 'embeddings' not in st.session_state:
-    st.session_state.embeddings = []
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-if 'gpt2_model' not in st.session_state:
-    st.session_state.gpt2_model = None
-if 'gpt2_tokenizer' not in st.session_state:
-    st.session_state.gpt2_tokenizer = None
+# ------------------- Session State -------------------
+for key in ['documents', 'embeddings', 'chat_history', 'similarity_scores', 'time_taken', 'llm_choice']:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key not in ['llm_choice'] else "GPT-2"
 
-# Initialize components
-processor = DocumentProcessor()
-bot = RAGBot()
+# ------------------- Model Selector -------------------
+st.sidebar.title("🔧 Model Settings")
+llm_options = ["GPT-2", "llama2:7b"]
+selected_llm = st.sidebar.selectbox("Choose LLM Model", llm_options)
+st.session_state.llm_choice = selected_llm
 
-# Sidebar for file upload and settings
-st.sidebar.title("📁 Document Upload")
-
-# Model loading status
-with st.sidebar:
-    st.write("### 🤖 Model Status")
-    model, tokenizer = bot.load_gpt2_model()
-    if model is not None:
-        st.success("✅ GPT-2 model loaded successfully!")
-    else:
-        st.error("❌ Failed to load GPT-2 model")
-
-# File upload
+# ------------------- Upload & Process Documents -------------------
+st.sidebar.title("📁 Upload Documents")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload your documents",
-    type=['pdf', 'txt', 'csv'],
-    accept_multiple_files=True,
-    help="Upload PDF, TXT, or CSV files"
+    "Upload PDF, TXT or CSV",
+    type=["pdf", "txt", "csv"],
+    accept_multiple_files=True
 )
 
-# Process uploaded files
+processor = DocumentProcessor()
+bot = RAGBot(model_choice=st.session_state.llm_choice)
+
 if uploaded_files:
-    with st.sidebar:
-        st.write("### Processing Files...")
-        progress_bar = st.progress(0)
-        
-        new_documents = []
-        new_embeddings = []
-        
-        for i, uploaded_file in enumerate(uploaded_files):
-            file_name = uploaded_file.name
-            file_type = file_name.split('.')[-1].lower()
-            
-            # Extract text based on file type
-            if file_type == 'pdf':
-                text = processor.extract_text_from_pdf(uploaded_file)
-            elif file_type == 'txt':
-                text = processor.extract_text_from_txt(uploaded_file)
-            elif file_type == 'csv':
-                text = processor.extract_text_from_csv(uploaded_file)
-            else:
-                st.error(f"Unsupported file type: {file_type}")
-                continue
-            
-            if text:
-                # Chunk the text
-                chunks = processor.chunk_text(text)
-                
-                if chunks:
-                    # Create embeddings
-                    embeddings = processor.create_embeddings(chunks)
-                    
-                    # Store document info
-                    doc_info = {
-                        'name': file_name,
-                        'type': file_type,
-                        'chunks': chunks,
-                        'text_preview': text[:200] + "..." if len(text) > 200 else text
-                    }
-                    
-                    new_documents.append(doc_info)
-                    new_embeddings.append(embeddings)
-            
-            progress_bar.progress((i + 1) / len(uploaded_files))
-        
-        # Update session state
-        st.session_state.documents = new_documents
-        st.session_state.embeddings = new_embeddings
-        
-        st.success(f"✅ Processed {len(new_documents)} documents!")
+    start = time.time()
+    st.sidebar.write("Processing Files...")
+    new_docs, new_embeddings = [], []
+    for file in uploaded_files:
+        name = file.name
+        ext = name.split(".")[-1].lower()
+        text = ""
+        if ext == "pdf": text = processor.extract_text_from_pdf(file)
+        elif ext == "txt": text = processor.extract_text_from_txt(file)
+        elif ext == "csv": text = processor.extract_text_from_csv(file)
+        if text:
+            chunks = processor.chunk_text(text)
+            embeddings = processor.create_embeddings(chunks)
+            new_docs.append({'name': name, 'type': ext, 'chunks': chunks, 'text_preview': text[:200]})
+            new_embeddings.append(embeddings)
+    st.session_state.documents = new_docs
+    st.session_state.embeddings = new_embeddings
+    st.sidebar.success(f"Processed {len(new_docs)} files in {round(time.time() - start, 2)}s")
 
-# Display uploaded documents
-if st.session_state.documents:
-    st.sidebar.write("### 📚 Uploaded Documents")
-    for doc in st.session_state.documents:
-        with st.sidebar.expander(f"📄 {doc['name']}"):
-            st.write(f"**Type:** {doc['type'].upper()}")
-            st.write(f"**Chunks:** {len(doc['chunks'])}")
-            st.write(f"**Preview:** {doc['text_preview']}")
-
-# Main interface
-if page == "📁 Q&A Interface": 
-    st.title("🤖 RAG Bot - Document Q&A")
-    st.markdown("Upload your documents and ask questions about their content!")
-
-    # Chat interface
+# ------------------- Q&A Interface -------------------
+if page == "📁 Q&A Interface":
+    st.title("🤖 RAG Bot Q&A")
     if st.session_state.documents:
-        # Query input
-        query = st.text_input("Ask a question about your documents:", 
-                            placeholder="What is the main topic discussed in the documents?")
-        
+        query = st.text_input("Ask a question from the documents")
         if st.button("Ask", type="primary") and query:
-            start = time.time()
-            with st.spinner("Searching for relevant information..."):
-                # Find relevant chunks
-                relevant_chunks = bot.find_relevant_chunks(
-                    query, 
-                    st.session_state.documents, 
-                    st.session_state.embeddings
-                )
-                # calculate similarity score stats
-                processor = DocumentProcessor()
-                query_embedding = processor.model.encode([query])
-                all_embeddings = np.vstack(st.session_state.embeddings)
-                similarities = cosine_similarity(query_embedding, all_embeddings)[0]
-                top_k_indices = np.argsort(similarities)[-3:][::-1]
-                top_similarities = [similarities[i] for i in top_k_indices]
+            start_time = time.time()
+            chunks, sim_scores = bot.find_relevant_chunks(query, st.session_state.documents, st.session_state.embeddings)
+            answer = bot.generate_answer(query, chunks)
+            end_time = time.time()
 
-                # Generate answer
-                answer = bot.generate_answer(query, relevant_chunks)
-                end = time.time()
-                process_time = end-start
-                st.write(f"Processing time to generate answer: {process_time}sec")
-                # Add to chat history
-                st.session_state.chat_history.append({
-                    'question': query,
-                    'answer': answer,
-                    'relevant_chunks': relevant_chunks
-                })
-        
-        # Display chat history
+            st.session_state.chat_history.append({
+                "query": query,
+                "answer": answer,
+                "chunks": chunks
+            })
+            st.session_state.similarity_scores.append(sim_scores)
+            st.session_state.time_taken.append(end_time - start_time)
+
+            st.write(f"⏱ Time taken: {end_time - start_time:.2f}s")
+            st.write("### 💬 Answer")
+            st.write(answer)
+
         if st.session_state.chat_history:
-            st.write("## Chat History")
-            
+            st.write("### 📜 Previous Queries")
             for i, chat in enumerate(reversed(st.session_state.chat_history)):
-                with st.expander(f"Q: {chat['question']}", expanded=(i==0)):
-                    st.write("**Answer:**")
+                with st.expander(f"Q: {chat['query']}", expanded=(i == 0)):
+                    st.markdown("**Answer:**")
                     st.write(chat['answer'])
-                    
-                    if chat['relevant_chunks']:
-                        st.write("** Source Context:**")
-                        for j, chunk in enumerate(chat['relevant_chunks'][:2]):  # Show top 2 chunks
-                            st.text_area(f"Relevant excerpt {j+1}:", chunk, height=100, disabled=True)
-        
-        # Clear chat button
-        if st.button(" Clear Chat History"):
-            st.session_state.chat_history = []
-            st.rerun()
+                    for j, c in enumerate(chat['chunks']):
+                        st.text_area(f"Context {j+1}:", c, height=100, disabled=True)
 
+        if st.button("Clear Chat History"):
+            for key in ['chat_history', 'similarity_scores', 'time_taken']:
+                st.session_state[key] = []
+            st.experimental_rerun()
     else:
-        # Welcome message
-        st.info("👆 Please upload your documents using the sidebar to get started!")
-        
-        st.write("## How to use:")
-        st.write("1. Upload PDF, TXT, or CSV files using the sidebar")
-        st.write("2. Wait for GPT-2 model to load (first time only)")
-        st.write("3. Ask questions about your documents")
-        st.write("4. Get AI-generated answers based on document content")
-        
-        st.write("## Supported file types:")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.write(" **PDF** - Text extraction from PDF documents")
-        with col2:
-            st.write(" **TXT** - Plain text files")
-        with col3:
-            st.write(" **CSV** - Tabular data files")
+        st.info("📤 Upload documents from the sidebar to begin.")
 
-    # Footer
-    st.markdown("---")
-    st.markdown("Built with Streamlit | Powered by GPT-2 & Sentence Transformers")
-    st.markdown("**Models used:** GPT-2 (Text Generation) | all-MiniLM-L6-v2 (Embeddings) ")
-
+# ------------------- Evaluation Page -------------------
 elif page == "📊 Evaluation Stats":
     st.title("📊 Evaluation Metrics")
-
-    if st.session_state.documents and st.session_state.embeddings:
-        num_docs = len(st.session_state.documents)
-        total_chunks = sum(len(doc['chunks']) for doc in st.session_state.documents)
-        avg_chunks = total_chunks / num_docs
-
-        # Compute avg similarity of most recent query
-        if st.session_state.chat_history:
-            last_query = st.session_state.chat_history[-1]['question']
-            relevant_chunks = bot.find_relevant_chunks(
-                last_query,
-                st.session_state.documents,
-                st.session_state.embeddings
-            )
-
-            processor = DocumentProcessor()
-            query_embedding = processor.model.encode([last_query])
-            all_embeddings = np.vstack(st.session_state.embeddings)
-            similarities = cosine_similarity(query_embedding, all_embeddings)[0]
-            top_k = np.argsort(similarities)[-3:][::-1]
-            top_similarities = [similarities[i] for i in top_k]
-            avg_similarity = np.mean(top_similarities)
-        else:
-            avg_similarity = None
-
-        st.markdown(f"**Number of documents uploaded:** {num_docs}")
-        st.markdown(f"**Average number of chunks per document:** {avg_chunks:.2f}")
-        st.markdown(f"**Top-3 average similarity for last query:** {avg_similarity:.4f}" if avg_similarity else "**No query asked yet**")
-
+    if not st.session_state.chat_history:
+        st.warning("⚠️ No queries asked yet.")
     else:
-        st.warning("Upload documents and ask a question in the Q&A section to see evaluation stats.")
+        st.write(f"**Total Queries:** {len(st.session_state.chat_history)}")
+        st.write(f"**Current LLM:** {st.session_state.llm_choice}")
 
+        avg_sim = np.mean([np.mean(s) for s in st.session_state.similarity_scores])
+        st.write(f"**Top-3 Avg Similarity:** {avg_sim:.4f}")
+        st.write(f"**Avg Time per Query:** {np.mean(st.session_state.time_taken):.2f}s")
+
+        # Plot similarity scores
+        st.subheader("📈 Top-k Similarity per Query")
+        fig1, ax1 = plt.subplots()
+        for i, sim in enumerate(st.session_state.similarity_scores):
+            ax1.plot([1, 2, 3], sim, label=f"Query {i+1}")
+        ax1.set_xlabel("Top-k Rank")
+        ax1.set_ylabel("Cosine Similarity")
+        ax1.legend()
+        st.pyplot(fig1)
+
+        # Plot timing stats
+        st.subheader("⏱ Time Taken per Query")
+        fig2, ax2 = plt.subplots()
+        ax2.plot(range(1, len(st.session_state.time_taken) + 1), st.session_state.time_taken, marker='o')
+        ax2.set_xlabel("Query #")
+        ax2.set_ylabel("Time (s)")
+        st.pyplot(fig2)

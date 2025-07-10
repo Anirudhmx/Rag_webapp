@@ -1,104 +1,81 @@
-import os
-os.environ["TRANSFORMERS_NO_TF"] = "1"
-import streamlit as st
-import PyPDF2
-from typing import List, Dict, Any
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, pipeline
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from sentence_transformers import SentenceTransformer
-import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-import torch
 from DocumentProcessor import DocumentProcessor
-
+import numpy as np
+import streamlit as st
+import torch
+import subprocess
 
 class RAGBot:
-    def __init__(self):
-        self.load_gpt2_model()
-    
-    @st.cache_resource
-    def load_gpt2_model(_self):
-        """Load GPT-2 model and tokenizer"""
-        try:
-            tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-            model = GPT2LMHeadModel.from_pretrained('gpt2')
-            
-            # Add padding token
-            tokenizer.pad_token = tokenizer.eos_token
-            
-            return model, tokenizer
-        except Exception as e:
-            st.error(f"Error loading GPT-2 model: {str(e)}")
-            return None, None
-    
-    def find_relevant_chunks(self, query: str, documents: List[Dict], embeddings: List[np.ndarray], top_k: int = 3) -> List[str]:
-        """Find most relevant document chunks for the query"""
+    def __init__(self, model_choice="GPT-2"):
+        self.model_choice = model_choice
+        self.processor = DocumentProcessor()
+        self.llm_model, self.llm_tokenizer = self.load_model()
+
+    def load_model(self):
+        if self.model_choice == "GPT-2":
+            try:
+                tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+                model = GPT2LMHeadModel.from_pretrained("gpt2")
+                tokenizer.pad_token = tokenizer.eos_token
+                return model, tokenizer
+            except Exception as e:
+                st.error(f"Error loading GPT-2: {e}")
+                return None, None
+        else:
+            return None, None  # For Ollama models, not needed here
+
+    def find_relevant_chunks(self, query: str, documents, embeddings, top_k: int = 3):
         if not documents or not embeddings:
-            return []
-        
-        # Create embedding for query
-        processor = DocumentProcessor()
-        query_embedding = processor.model.encode([query])
-        
-        # Combine all embeddings
+            return [], []
+        query_embedding = self.processor.model.encode([query])
         all_embeddings = np.vstack(embeddings)
-        all_chunks = []
-        
-        for doc in documents:
-            all_chunks.extend(doc['chunks'])
-        
-        # Calculate similarities
+        all_chunks = [chunk for doc in documents for chunk in doc['chunks']]
         similarities = cosine_similarity(query_embedding, all_embeddings)[0]
-        
-        # Get top-k most similar chunks
         top_indices = np.argsort(similarities)[-top_k:][::-1]
-        relevant_chunks = [all_chunks[i] for i in top_indices]
-        
-        return relevant_chunks
-    
-    def generate_answer(self, query: str, context: List[str]) -> str:
-        """Generate answer using GPT-2"""
-        if not context:
-            return "I couldn't find relevant information in the uploaded documents to answer your question."
-        
-        model, tokenizer = self.load_gpt2_model()
-        if model is None or tokenizer is None:
-            return "Error: Could not load GPT-2 model."
-        
-        # Prepare context
-        context_text = "\n".join(context[:2])  # Use top 2 chunks to avoid token limit
-        
-        # Create prompt
-        prompt = f"Based on the following context, answer the question:\n\nContext: {context_text[:800]}\n\nQuestion: {query}\n\nAnswer:"
-        
-        try:
-            # Tokenize input
-            inputs = tokenizer.encode(prompt, return_tensors='pt', max_length=512, truncation=True)
-            
-            # Generate response
-            with torch.no_grad():
-                outputs = model.generate(
+        return [all_chunks[i] for i in top_indices], [similarities[i] for i in top_indices]
+
+    def generate_answer(self, query: str, context_chunks: list) -> str:
+        context_text = "\n".join(context_chunks[:2])
+        prompt = f"Based on the following context, answer the question:\n\nContext:\n{context_text}\n\nQuestion: {query}\n\nAnswer:"
+
+        if self.model_choice == "GPT-2":
+            if self.llm_model is None or self.llm_tokenizer is None:
+                return "Error loading GPT-2 model."
+            try:
+                inputs = self.llm_tokenizer.encode(prompt, return_tensors='pt', max_length=512, truncation=True)
+                outputs = self.llm_model.generate(
                     inputs,
-                    max_length=inputs.shape[1] + 150,  # Add 150 tokens for the answer
-                    num_return_sequences=1,
+                    max_length=inputs.shape[1] + 300,
                     temperature=0.7,
                     do_sample=True,
-                    pad_token_id=tokenizer.eos_token_id,
+                    pad_token_id=self.llm_tokenizer.eos_token_id,
                     attention_mask=torch.ones(inputs.shape, dtype=torch.long)
                 )
-            
-            # Decode response
-            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract only the answer part
-            answer_start = generated_text.find("Answer:") + len("Answer:")
-            answer = generated_text[answer_start:].strip()
-            
-            # Clean up the answer
-            if len(answer) > 300:
-                answer = answer[:300] + "..."
-            
-            return answer if answer else "I couldn't generate a proper answer based on the context."
-            
-        except Exception as e:
-            st.error(f"Error generating answer: {str(e)}")
-            return f"Based on the context, here's the most relevant information: {context_text[:500]}..."
+                generated_text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
+                answer_start = generated_text.find("Answer:") + len("Answer:")
+                return generated_text[answer_start:].strip()[:300] + "..."
+            except Exception as e:
+                st.error(f"Error generating with GPT-2: {str(e)}")
+                return "Error generating answer using GPT-2."
+
+        else:
+            # Use Ollama for external models
+            try:
+                result = subprocess.run(
+                    ["ollama", "run", self.model_choice.lower()],
+                    input=prompt.encode("utf-8"),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=60
+                )
+                output = result.stdout.decode().strip()
+                if not output:
+                    return "Ollama model did not return any output."
+                return output.split("Answer:")[-1].strip() if "Answer:" in output else output
+            except subprocess.TimeoutExpired:
+                return "Ollama model took too long to respond."
+            except Exception as e:
+                return f"Error using Ollama model '{self.model_choice}': {e}"
+
