@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 from DocumentProcessor import DocumentProcessor
-from rag_bot import RAGBot
+from RAGBot import RAGBot
 
 # ------------------- Page Config -------------------
 st.set_page_config(page_title="RAG Bot - Document Q&A", page_icon="🤖", layout="wide")
