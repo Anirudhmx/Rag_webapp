@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import torch
+import time 
 from DocumentProcessor import DocumentProcessor
 from RAGBot import RAGBot
 
@@ -18,6 +19,7 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
+page = st.sidebar.selectbox("Navigate", ["📁 Q&A Interface", "📊 Evaluation Stats"])
 
 # Initialize session state
 if 'documents' not in st.session_state:
@@ -116,73 +118,119 @@ if st.session_state.documents:
             st.write(f"**Preview:** {doc['text_preview']}")
 
 # Main interface
-st.title("🤖 RAG Bot - Document Q&A")
-st.markdown("Upload your documents and ask questions about their content!")
+if page == "📁 Q&A Interface": 
+    st.title("🤖 RAG Bot - Document Q&A")
+    st.markdown("Upload your documents and ask questions about their content!")
 
-# Chat interface
-if st.session_state.documents:
-    # Query input
-    query = st.text_input("💬 Ask a question about your documents:", 
-                         placeholder="What is the main topic discussed in the documents?")
-    
-    if st.button("🔍 Ask", type="primary") and query:
-        with st.spinner("Searching for relevant information..."):
-            # Find relevant chunks
+    # Chat interface
+    if st.session_state.documents:
+        # Query input
+        query = st.text_input("Ask a question about your documents:", 
+                            placeholder="What is the main topic discussed in the documents?")
+        
+        if st.button("Ask", type="primary") and query:
+            start = time.time()
+            with st.spinner("Searching for relevant information..."):
+                # Find relevant chunks
+                relevant_chunks = bot.find_relevant_chunks(
+                    query, 
+                    st.session_state.documents, 
+                    st.session_state.embeddings
+                )
+                # calculate similarity score stats
+                processor = DocumentProcessor()
+                query_embedding = processor.model.encode([query])
+                all_embeddings = np.vstack(st.session_state.embeddings)
+                similarities = cosine_similarity(query_embedding, all_embeddings)[0]
+                top_k_indices = np.argsort(similarities)[-3:][::-1]
+                top_similarities = [similarities[i] for i in top_k_indices]
+
+                # Generate answer
+                answer = bot.generate_answer(query, relevant_chunks)
+                end = time.time()
+                process_time = end-start
+                st.write(f"Processing time to generate answer: {process_time}sec")
+                # Add to chat history
+                st.session_state.chat_history.append({
+                    'question': query,
+                    'answer': answer,
+                    'relevant_chunks': relevant_chunks
+                })
+        
+        # Display chat history
+        if st.session_state.chat_history:
+            st.write("## Chat History")
+            
+            for i, chat in enumerate(reversed(st.session_state.chat_history)):
+                with st.expander(f"Q: {chat['question']}", expanded=(i==0)):
+                    st.write("**Answer:**")
+                    st.write(chat['answer'])
+                    
+                    if chat['relevant_chunks']:
+                        st.write("** Source Context:**")
+                        for j, chunk in enumerate(chat['relevant_chunks'][:2]):  # Show top 2 chunks
+                            st.text_area(f"Relevant excerpt {j+1}:", chunk, height=100, disabled=True)
+        
+        # Clear chat button
+        if st.button(" Clear Chat History"):
+            st.session_state.chat_history = []
+            st.rerun()
+
+    else:
+        # Welcome message
+        st.info("👆 Please upload your documents using the sidebar to get started!")
+        
+        st.write("## How to use:")
+        st.write("1. Upload PDF, TXT, or CSV files using the sidebar")
+        st.write("2. Wait for GPT-2 model to load (first time only)")
+        st.write("3. Ask questions about your documents")
+        st.write("4. Get AI-generated answers based on document content")
+        
+        st.write("## Supported file types:")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(" **PDF** - Text extraction from PDF documents")
+        with col2:
+            st.write(" **TXT** - Plain text files")
+        with col3:
+            st.write(" **CSV** - Tabular data files")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("Built with Streamlit | Powered by GPT-2 & Sentence Transformers")
+    st.markdown("**Models used:** GPT-2 (Text Generation) | all-MiniLM-L6-v2 (Embeddings) ")
+
+elif page == "📊 Evaluation Stats":
+    st.title("📊 Evaluation Metrics")
+
+    if st.session_state.documents and st.session_state.embeddings:
+        num_docs = len(st.session_state.documents)
+        total_chunks = sum(len(doc['chunks']) for doc in st.session_state.documents)
+        avg_chunks = total_chunks / num_docs
+
+        # Compute avg similarity of most recent query
+        if st.session_state.chat_history:
+            last_query = st.session_state.chat_history[-1]['question']
             relevant_chunks = bot.find_relevant_chunks(
-                query, 
-                st.session_state.documents, 
+                last_query,
+                st.session_state.documents,
                 st.session_state.embeddings
             )
-            
-            # Generate answer
-            answer = bot.generate_answer(query, relevant_chunks)
-            
-            # Add to chat history
-            st.session_state.chat_history.append({
-                'question': query,
-                'answer': answer,
-                'relevant_chunks': relevant_chunks
-            })
-    
-    # Display chat history
-    if st.session_state.chat_history:
-        st.write("## 💬 Chat History")
-        
-        for i, chat in enumerate(reversed(st.session_state.chat_history)):
-            with st.expander(f"Q: {chat['question']}", expanded=(i==0)):
-                st.write("**Answer:**")
-                st.write(chat['answer'])
-                
-                if chat['relevant_chunks']:
-                    st.write("**📋 Source Context:**")
-                    for j, chunk in enumerate(chat['relevant_chunks'][:2]):  # Show top 2 chunks
-                        st.text_area(f"Relevant excerpt {j+1}:", chunk, height=100, disabled=True)
-    
-    # Clear chat button
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.chat_history = []
-        st.rerun()
 
-else:
-    # Welcome message
-    st.info("👆 Please upload your documents using the sidebar to get started!")
-    
-    st.write("## How to use:")
-    st.write("1. Upload PDF, TXT, or CSV files using the sidebar")
-    st.write("2. Wait for GPT-2 model to load (first time only)")
-    st.write("3. Ask questions about your documents")
-    st.write("4. Get AI-generated answers based on document content")
-    
-    st.write("## Supported file types:")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.write("📄 **PDF** - Text extraction from PDF documents")
-    with col2:
-        st.write("📝 **TXT** - Plain text files")
-    with col3:
-        st.write("📊 **CSV** - Tabular data files")
+            processor = DocumentProcessor()
+            query_embedding = processor.model.encode([last_query])
+            all_embeddings = np.vstack(st.session_state.embeddings)
+            similarities = cosine_similarity(query_embedding, all_embeddings)[0]
+            top_k = np.argsort(similarities)[-3:][::-1]
+            top_similarities = [similarities[i] for i in top_k]
+            avg_similarity = np.mean(top_similarities)
+        else:
+            avg_similarity = None
 
-# Footer
-st.markdown("---")
-st.markdown("Built with Streamlit 🎈 | Powered by GPT-2 & Sentence Transformers")
-st.markdown("**Models used:** GPT-2 (Text Generation) | all-MiniLM-L6-v2 (Embeddings) - Both are free and open-source!")
+        st.markdown(f"**Number of documents uploaded:** {num_docs}")
+        st.markdown(f"**Average number of chunks per document:** {avg_chunks:.2f}")
+        st.markdown(f"**Top-3 average similarity for last query:** {avg_similarity:.4f}" if avg_similarity else "**No query asked yet**")
+
+    else:
+        st.warning("Upload documents and ask a question in the Q&A section to see evaluation stats.")
+
