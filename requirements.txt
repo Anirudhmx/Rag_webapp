@@ -1,0 +1,16 @@
+langchain
+transformers
+streamlit
+pypdf
+pypdf2
+numpy
+torch
+scikit-learn
+sentence-transformers
+chromadb
+wikipedia
+python-dotenv
+sse_starlette
+langchain_chroma
+pandas
+
